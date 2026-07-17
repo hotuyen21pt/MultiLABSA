@@ -17,3 +17,6 @@ tqdm>=4.66
 #     mecab-ko-dic     #   Korean dictionary for MeCab (ko)
 #     jieba            #   Chinese word segmentation (zh)
 #   fasttext-wheel   # seed expansion via nearest neighbours (--expand)
+#
+# Running on Kaggle (torch/transformers/pandas/numpy/tqdm preinstalled)?
+# Use requirements-kaggle.txt instead — see multilabsa-paper.ipynb.
