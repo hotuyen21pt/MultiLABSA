@@ -29,7 +29,7 @@ from transformers import AutoTokenizer, MT5ForConditionalGeneration
 
 from collator import DataCollatorForSpanCorruption
 from dataset import build_datasets
-from masking import SpanCorruption
+from masking import SpanCorruption, load_lexicon_weights
 from trainer import DAPTTrainer, find_last_checkpoint
 from utils import Config, get_device, set_seed, setup_logging
 
@@ -61,6 +61,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--noise_density", type=float, default=0.15)
     p.add_argument("--max_span_length", type=int, default=5)
     p.add_argument("--lexicon_boost", type=float, default=5.0)
+    p.add_argument("--lexicon_file", default=None,
+                   help="Data-driven lexicon JSON from build_lexicon.py (term->salience). "
+                        "If omitted, the curated utils.LEXICON is used.")
 
     # optimisation
     p.add_argument("--learning_rate", type=float, default=1e-4)
@@ -120,11 +123,20 @@ def main() -> None:
 
     # ---- data -------------------------------------------------------------
     train_ds, val_ds = build_datasets(cfg)
+
+    # Prefer the data-driven lexicon (build_lexicon.py) when provided; otherwise
+    # SpanCorruption falls back to the curated utils.LEXICON.
+    lexicon_weights = None
+    if cfg.lexicon_file:
+        lexicon_weights = load_lexicon_weights(cfg.lexicon_file)
+        logger.info("Loaded %d lexicon terms from %s", len(lexicon_weights), cfg.lexicon_file)
+
     span_corruption = SpanCorruption(
         tokenizer=tokenizer,
         noise_density=cfg.noise_density,
         max_span_length=cfg.max_span_length,
         lexicon_boost=cfg.lexicon_boost,
+        lexicon_weights=lexicon_weights,
         extra_lexicon_terms=cfg.extra_lexicon_terms,
     )
     collator = DataCollatorForSpanCorruption(

@@ -21,8 +21,9 @@ follow the real mT5 convention and also append the EOS token to both sides.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from transformers import PreTrainedTokenizerBase
@@ -61,6 +62,17 @@ def get_sentinel_token_ids(
     return ids
 
 
+def load_lexicon_weights(path: str) -> Dict[str, float]:
+    """Load a ``{term: salience}`` map produced by ``build_lexicon.py``.
+
+    Accepts either the merged file shape ``{"weights": {...}}`` or a bare
+    ``{term: salience}`` mapping.
+    """
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("weights", data) if isinstance(data, dict) else {}
+
+
 @dataclass
 class MaskedExample:
     """A single corrupted example (token ids plus decoded text for debugging)."""
@@ -79,9 +91,13 @@ class SpanCorruption:
         noise_density: fraction of tokens to mask (~0.15).
         max_span_length: maximum span length; spans are sampled uniformly in
             ``[1, max_span_length]``.
-        lexicon_boost: multiplier applied to the start-weight of tokens that
-            belong to a lexicon term (``1.0`` disables biasing).
-        extra_lexicon_terms: additional domain terms to bias towards.
+        lexicon_boost: strength of the bias; a token's weight becomes
+            ``1 + lexicon_boost * salience`` (``0.0`` disables biasing).
+        lexicon_weights: a ``{term: salience in [0,1]}`` map (e.g. produced by
+            ``build_lexicon.py``). Terms may be unigrams (``room``) or bigrams
+            (``swimming pool``). If ``None``, a flat map is built from the
+            hand-written lexicon in ``utils.LEXICON`` (every term salience 1.0).
+        extra_lexicon_terms: extra terms merged into the fallback flat map.
     """
 
     def __init__(
@@ -90,13 +106,19 @@ class SpanCorruption:
         noise_density: float = 0.15,
         max_span_length: int = 5,
         lexicon_boost: float = 5.0,
+        lexicon_weights: Optional[Dict[str, float]] = None,
         extra_lexicon_terms: Optional[List[str]] = None,
     ) -> None:
         self.tokenizer = tokenizer
         self.noise_density = noise_density
         self.max_span_length = max_span_length
         self.lexicon_boost = lexicon_boost
-        self.lexicon: Set[str] = build_lexicon(extra_lexicon_terms)
+        # Prefer the data-driven weights; otherwise fall back to the curated set
+        # with a flat salience of 1.0 (reproducing the simple on/off behaviour).
+        if lexicon_weights is not None:
+            self.lexicon_weights: Dict[str, float] = lexicon_weights
+        else:
+            self.lexicon_weights = {t: 1.0 for t in build_lexicon(extra_lexicon_terms)}
 
         # Cache the sentinel ids (<extra_id_0> .. <extra_id_99>).  mT5 provides
         # exactly 100 of them; this bounds the number of spans per example.
@@ -108,26 +130,43 @@ class SpanCorruption:
     # Lexicon-based per-token weighting                                    #
     # ------------------------------------------------------------------ #
     def _token_weights(self, token_ids: Sequence[int]) -> np.ndarray:
-        """Return a start-weight per token, boosting tokens inside lexicon terms.
+        """Return a per-token weight, boosting tokens inside lexicon terms.
 
-        SentencePiece marks a word start with the ``▁`` prefix, so we can rebuild
-        whole words from consecutive sub-word pieces without an offset map and
-        check each reconstructed word against the lexicon.
+        SentencePiece marks a word start with the ``▁`` prefix, so we rebuild
+        whole words from consecutive sub-word pieces without an offset map, then
+        match both single words (unigrams) and consecutive word pairs (bigram
+        collocations) against the lexicon. A matched term raises the weight of
+        every token it covers to ``1 + boost * salience``.
         """
         pieces = self.tokenizer.convert_ids_to_tokens(list(token_ids))
         n = len(pieces)
         weights = np.ones(n, dtype=np.float64)
 
+        # rebuild words as (text, start, end) spans over the token indices
+        words: List[Tuple[str, int, int]] = []
         i = 0
         while i < n:
-            # a word runs from a word-start piece up to the next one
             j = i + 1
             while j < n and not pieces[j].startswith(_SP_UNDERLINE):
                 j += 1
             word = "".join(pieces[i:j]).replace(_SP_UNDERLINE, "").lower()
-            if word and word in self.lexicon:
-                weights[i:j] = self.lexicon_boost
+            words.append((word, i, j))
             i = j
+
+        def _apply(start: int, end: int, salience: float) -> None:
+            boosted = 1.0 + self.lexicon_boost * salience
+            weights[start:end] = np.maximum(weights[start:end], boosted)
+
+        # unigram matches
+        for word, s, e in words:
+            if word and word in self.lexicon_weights:
+                _apply(s, e, self.lexicon_weights[word])
+
+        # bigram (collocation) matches -> boost both words of the pair
+        for (w1, s1, _e1), (w2, _s2, e2) in zip(words, words[1:]):
+            phrase = f"{w1} {w2}"
+            if phrase in self.lexicon_weights:
+                _apply(s1, e2, self.lexicon_weights[phrase])
         return weights
 
     # ------------------------------------------------------------------ #

@@ -199,7 +199,8 @@ class Config:
     # ---- span corruption ----------------------------------------------------
     noise_density: float = 0.15           # ~15% of tokens masked
     max_span_length: int = 5              # spans are 1..5 tokens long
-    lexicon_boost: float = 5.0            # start-weight multiplier for terms
+    lexicon_boost: float = 5.0            # bias strength: weight = 1 + boost*salience
+    lexicon_file: Optional[str] = None    # data-driven lexicon from build_lexicon.py
 
     # ---- optimisation -------------------------------------------------------
     learning_rate: float = 1e-4

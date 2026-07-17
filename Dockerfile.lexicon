@@ -1,0 +1,4 @@
+FROM python:3.12-slim
+# Tools for data-driven lexicon building.
+RUN pip install --no-cache-dir pandas "numpy<2" fasttext-wheel wordfreq jieba
+WORKDIR /app/dapt
