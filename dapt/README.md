@@ -144,3 +144,68 @@ Mask được sinh mới mỗi lần lấy batch (collator.py), nên cùng một
 
 ---
 Tóm lại: DAPT = liên tục cho model chơi trò "điền vào chỗ trống" trên review khách sạn; mỗi lần điền sai bị phạt (loss) và chỉnh trọng số (backward + optimizer). Nhờ biased masking + temperature sampling, phần bị che tập trung vào từ vựng/cảm xúc/ngôn ngữ quan trọng, nên model hotel-mt5 cuối cùng trở thành backbone hiểu sâu ngôn ngữ domain khách sạn đa ngôn ngữ — sẵn sàng cho các bước fine-tune sau.
+
+
+1. load_reviews()
+
+Đọc hotel_review*_lang.csv theo chunk, chỉ giữ các ngôn ngữ mục tiêu (en, vi, fr…), mỗi ngôn ngữ tối đa max_per_lang review (giới hạn để chạy nhanh). Trả {lang: [reviews]}.
+
+2. build_for_language() — trái tim
+
+với mỗi review: tokenize(text, lang)
+   → đếm unigram_counts, bigram_counts, tổng token, vocab
+
+→ terminology_unigrams()   # weirdness
+→ terminology_bigrams()    # PMI
+→ opinions  = seed ∩ vocab (+ fastText nếu --expand)
+→ negations, intensifiers = seed đóng ∩ vocab
+
+3. tokenize(text, lang)
+
+Dùng wordfreq.tokenize — cắt từ theo từng ngôn ngữ (tiếng Anh khác tiếng Nhật/Trung). Nếu ngôn ngữ thiếu bộ segmenter thì fallback về regex \w+.
+
+4. terminology_unigrams() — weirdness
+
+Đây là phần khoa học nhất:
+
+f_domain  = count(w) / total_tokens          # tần suất trong corpus khách sạn
+f_general = word_frequency(w, lang)           # tần suất chung (từ wordfreq)
+log_weirdness = log(f_domain / f_general)
+
+- f_general lấy từ wordfreq (kho tần suất từ tổng quát đa ngôn ngữ) — đây là "corpus nền".
+- weirdness cao = từ xuất hiện trong review khách sạn nhiều bất thường so với đời thường → chính là thuật ngữ domain.
+  - Ví dụ: "reception", "check-in", "phòng" → weirdness cao.
+  - "the", "và", "good" → weirdness ~1 (không đặc trưng) → bị loại.
+- minimum=1e-8: chặn từ lạ/typo (f_general=0) khỏi weirdness = vô cực.
+- Lọc min_count (bỏ nhiễu tần suất thấp) → lấy top_k → chuẩn hoá về [0,1] (_minmax).
+
+5. terminology_bigrams() — PMI
+
+Tìm cụm từ cố định (collocation):
+PMI(w1,w2) = log( P(w1 w2) / (P(w1) · P(w2)) )
+- PMI cao = 2 từ đi cùng nhau nhiều hơn ngẫu nhiên → cụm có nghĩa: "swimming pool", "front desk", "lễ tân".
+- Cũng lọc min_count → top_k → chuẩn hoá [0,1].
+
+6. expand_with_fasttext() (khi --expand)
+
+- Ghi review ra file tạm → train fastText skipgram ngay trên corpus khách sạn.
+- Với mỗi opinion seed (clean, friendly…) → lấy k từ gần nhất trong không gian embedding (get_nearest_neighbors) → thêm những từ có độ tương đồng ≥ min_similarity.
+- Nhờ vậy lexicon bám sát cách dùng từ thực tế trong domain (vd clean → spotless, tidy).
+
+7. Trọng số liên tục (điểm mới so với bản cũ)
+
+Mỗi term có salience ∈ [0,1]. lexicon.json = {term: salience}. Trong masking.py:
+weight(token) = 1 + lexicon_boost * salience
+→ từ càng đặc trưng domain (salience cao) càng dễ bị mask — mượt hơn kiểu bật/tắt phẳng cũ (mọi từ boost = 5.0 như nhau).
+- negation/intensifier gán salience = 1.0 (luôn quan trọng, boost tối đa).
+
+8. masking.py khớp thế nào
+
+_token_weights ghép sub-word thành từ, rồi so cả unigram (room) lẫn bigram (swimming pool — 2 từ liên tiếp) với lexicon; term nào khớp thì nâng weight các token nó phủ.
+
+---
+Tóm tắt một câu
+
+build_lexicon.py = rút thuật ngữ domain từ chính dữ liệu bằng thống kê (weirdness so với wordfreq + PMI cho cụm), mở rộng opinion bằng fastText, và gán mỗi từ một điểm salience liên tục để masking ưu tiên mask đúng những từ quan trọng nhất cho phân tích cảm xúc khách sạn.
+
+Image multilabsa-lexicon đang build xong sẽ chạy thử trên en+vi để xác nhận output hợp lý. Tôi sẽ báo kết quả.
