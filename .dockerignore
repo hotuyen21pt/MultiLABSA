@@ -1,0 +1,5 @@
+# Keep the build context tiny — data is mounted at runtime, not built in.
+data_final/
+*.zip
+lid.176.bin
+.git/

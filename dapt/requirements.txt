@@ -1,0 +1,9 @@
+# Stage 0 — Multilingual Hotel Domain-Adaptive Pretraining (Hotel-DAPT)
+# Install a CUDA-enabled torch build matching your GPU/driver (see pytorch.org).
+torch>=2.1
+transformers>=4.40
+sentencepiece>=0.1.99   # required by the mT5 tokenizer
+protobuf>=3.20          # required to load the mT5 SentencePiece model
+pandas>=2.0
+numpy>=1.24
+tqdm>=4.66

@@ -1,0 +1,12 @@
+# Data
+data_final/
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+
+# Models & training artifacts
+lid.176.bin
+hotel-mt5/
+checkpoints/
