@@ -7,3 +7,9 @@ protobuf>=3.20          # required to load the mT5 SentencePiece model
 pandas>=2.0
 numpy>=1.24
 tqdm>=4.66
+
+# Optional — only needed to run build_lexicon.py (data-driven lexicon).
+# Install separately: pip install wordfreq jieba fasttext-wheel
+#   wordfreq        # general word frequencies for keyness/weirdness
+#   jieba           # Chinese word segmentation for wordfreq (zh)
+#   fasttext-wheel  # seed expansion via nearest neighbours (--expand)

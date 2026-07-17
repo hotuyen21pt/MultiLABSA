@@ -17,10 +17,13 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
-import numpy as np
-import torch
+# NOTE: heavy deps (numpy/torch) are imported lazily inside the functions that
+# need them, so lightweight consumers (e.g. build_lexicon.py, which only needs
+# LEXICON / Config / setup_logging) can import this module without torch.
+if TYPE_CHECKING:  # for type checkers only; no runtime import
+    import torch
 
 
 # --------------------------------------------------------------------------- #
@@ -33,6 +36,9 @@ def set_seed(seed: int) -> None:
     it here makes the whole masking stream deterministic for a given seed while
     still varying from one example to the next.
     """
+    import numpy as np
+    import torch
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -40,8 +46,10 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def get_device() -> torch.device:
+def get_device() -> "torch.device":
     """Return the CUDA device if available, else CPU."""
+    import torch
+
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -55,6 +63,8 @@ def resolve_precision(requested: str) -> str:
         A concrete precision string. ``"auto"`` picks ``bf16`` when the GPU
         supports it (Ampere+), otherwise ``fp16`` on GPU, otherwise ``fp32``.
     """
+    import torch
+
     if requested != "auto":
         return requested
     if torch.cuda.is_available():
@@ -80,7 +90,7 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     return logger
 
 
-def count_parameters(model: torch.nn.Module) -> int:
+def count_parameters(model: "torch.nn.Module") -> int:
     """Count trainable parameters of a model."""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 

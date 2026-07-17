@@ -124,18 +124,31 @@ def _minmax(scores: Dict[str, float]) -> Dict[str, float]:
 
 
 def terminology_unigrams(
-    unigram_counts: Counter, total_tokens: int, lang: str, min_count: int, top_k: int
+    unigram_counts: Counter,
+    total_tokens: int,
+    lang: str,
+    min_count: int,
+    top_k: int,
+    min_general_freq: float,
 ) -> Dict[str, float]:
-    """Rank unigrams by weirdness (domain freq / general freq) -> salience."""
+    """Rank unigrams by weirdness (domain freq / general freq) -> salience.
+
+    A ``min_general_freq`` floor is essential: pure weirdness rewards *rarity*,
+    so without it the top terms become proper nouns (place/brand names) and
+    typos, which are rare in general text and thus score highest. Requiring the
+    word to exist in the general vocabulary keeps genuine domain vocabulary
+    (``reception``, ``breakfast``, ``homestay``) and drops the noise.
+    """
     from wordfreq import word_frequency
 
     log_weirdness: Dict[str, float] = {}
     for word, count in unigram_counts.items():
         if count < min_count or len(word) < 2:
             continue
+        f_general = word_frequency(word, lang, minimum=0.0)
+        if f_general < min_general_freq:  # unknown -> proper noun / typo / foreign
+            continue
         f_domain = count / total_tokens
-        # `minimum` bounds unknown words so pure noise/typos can't score infinite.
-        f_general = word_frequency(word, lang, minimum=1e-8)
         log_weirdness[word] = math.log(f_domain / f_general)
 
     # keep the most domain-specific terms
@@ -147,14 +160,26 @@ def terminology_bigrams(
     bigram_counts: Counter,
     unigram_counts: Counter,
     total_tokens: int,
+    lang: str,
     min_count: int,
     top_k: int,
+    min_general_freq: float,
 ) -> Dict[str, float]:
-    """Rank bigrams by PMI (collocation strength inside the corpus) -> salience."""
+    """Rank bigrams by PMI (collocation strength inside the corpus) -> salience.
+
+    A bigram is kept only if at least one of its words is a real general word,
+    which drops proper-noun collocations (e.g. place names) while keeping
+    domain collocations like ``front desk`` / ``swimming pool``.
+    """
+    from wordfreq import word_frequency
+
     pmi: Dict[str, float] = {}
     for (w1, w2), count in bigram_counts.items():
         if count < min_count:
             continue
+        if (word_frequency(w1, lang, minimum=0.0) < min_general_freq
+                and word_frequency(w2, lang, minimum=0.0) < min_general_freq):
+            continue  # both words unknown -> proper-noun pair, skip
         p_bigram = count / total_tokens
         p_w1 = unigram_counts[w1] / total_tokens
         p_w2 = unigram_counts[w2] / total_tokens
@@ -231,8 +256,13 @@ def build_for_language(
         return {"hotel_terms": {}, "opinions": {}, "negations": {}, "intensifiers": {}}
 
     # 1. terminology (data-driven)
-    uni = terminology_unigrams(unigram_counts, total_tokens, lang, args.min_count, args.top_k)
-    bi = terminology_bigrams(bigram_counts, unigram_counts, total_tokens, args.min_count, args.top_k_bigrams)
+    uni = terminology_unigrams(
+        unigram_counts, total_tokens, lang, args.min_count, args.top_k, args.min_general_freq
+    )
+    bi = terminology_bigrams(
+        bigram_counts, unigram_counts, total_tokens, lang,
+        args.min_count, args.top_k_bigrams, args.min_general_freq,
+    )
     hotel_terms = {**uni, **bi}
 
     # 2. opinion (seed ∩ corpus, optionally fastText-expanded)
@@ -273,6 +303,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--languages", nargs="+", default=DEFAULT_LANGUAGES)
     p.add_argument("--max_per_lang", type=int, default=200_000)
     p.add_argument("--min_count", type=int, default=20, help="min corpus count to keep a term")
+    p.add_argument("--min_general_freq", type=float, default=1e-6,
+                   help="drop terms below this wordfreq general frequency (proper nouns/typos)")
     p.add_argument("--top_k", type=int, default=300, help="top unigram terms per language")
     p.add_argument("--top_k_bigrams", type=int, default=100, help="top bigram collocations per language")
     p.add_argument("--expand", action="store_true", help="expand opinion seeds via fastText NN")
