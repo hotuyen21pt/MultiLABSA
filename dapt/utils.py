@@ -213,6 +213,7 @@ class Config:
     lexicon_file: Optional[str] = None    # data-driven lexicon from build_lexicon.py
 
     # ---- optimisation -------------------------------------------------------
+    optimizer: str = "adamw"              # adamw|adafactor (adafactor: ~4x less optimizer-state memory)
     learning_rate: float = 1e-4
     weight_decay: float = 0.01
     adam_beta1: float = 0.9

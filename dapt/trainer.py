@@ -26,10 +26,11 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import torch
-from torch.optim import AdamW
+from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import (
+    Adafactor,
     MT5ForConditionalGeneration,
     PreTrainedTokenizerBase,
     get_linear_schedule_with_warmup,
@@ -113,8 +114,8 @@ class DAPTTrainer:
     # ------------------------------------------------------------------ #
     # Setup helpers                                                        #
     # ------------------------------------------------------------------ #
-    def _build_optimizer(self) -> AdamW:
-        """AdamW with weight decay disabled on biases and LayerNorm weights."""
+    def _build_optimizer(self) -> Optimizer:
+        """AdamW or Adafactor, with weight decay disabled on biases/LayerNorm."""
         decay, no_decay = [], []
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
@@ -127,6 +128,17 @@ class DAPTTrainer:
             {"params": decay, "weight_decay": self.cfg.weight_decay},
             {"params": no_decay, "weight_decay": 0.0},
         ]
+        if self.cfg.optimizer == "adafactor":
+            # scale_parameter/relative_step/warmup_init off so Adafactor takes an
+            # explicit lr and defers warmup/decay to our own linear scheduler
+            # (its default relative_step mode ignores param_group lr entirely).
+            return Adafactor(
+                groups,
+                lr=self.cfg.learning_rate,
+                scale_parameter=False,
+                relative_step=False,
+                warmup_init=False,
+            )
         return AdamW(
             groups,
             lr=self.cfg.learning_rate,

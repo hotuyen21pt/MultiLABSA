@@ -66,6 +66,10 @@ def parse_args() -> argparse.Namespace:
                         "If omitted, the curated utils.LEXICON is used.")
 
     # optimisation
+    p.add_argument("--optimizer", default="adamw", choices=["adamw", "adafactor"],
+                   help="adafactor keeps a factored second moment (no full first "
+                        "moment) so its optimizer state is ~4x smaller than AdamW's "
+                        "- use it when the model+AdamW state doesn't fit in GPU memory")
     p.add_argument("--learning_rate", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--max_grad_norm", type=float, default=1.0)
