@@ -9,7 +9,11 @@ numpy>=1.24
 tqdm>=4.66
 
 # Optional — only needed to run build_lexicon.py (data-driven lexicon).
-# Install separately: pip install wordfreq jieba fasttext-wheel
-#   wordfreq        # general word frequencies for keyness/weirdness
-#   jieba           # Chinese word segmentation for wordfreq (zh)
-#   fasttext-wheel  # seed expansion via nearest neighbours (--expand)
+# Install separately: pip install "wordfreq[cjk]" fasttext-wheel
+#   wordfreq         # general word frequencies for keyness/weirdness
+#   wordfreq[cjk]    # pulls in the CJK tokenizer deps wordfreq needs:
+#     mecab-python3    #   Japanese/Korean morphological tokenizer
+#     ipadic           #   Japanese dictionary for MeCab (ja)
+#     mecab-ko-dic     #   Korean dictionary for MeCab (ko)
+#     jieba            #   Chinese word segmentation (zh)
+#   fasttext-wheel   # seed expansion via nearest neighbours (--expand)

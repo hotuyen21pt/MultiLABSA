@@ -329,7 +329,11 @@ def main() -> None:
         if not reviews:
             logger.warning("No reviews for '%s'; skipping.", lang)
             continue
-        categories = build_for_language(lang, reviews, args)
+        try:
+            categories = build_for_language(lang, reviews, args)
+        except Exception:
+            logger.exception("Failed to build lexicon for '%s'; skipping.", lang)
+            continue
 
         # per-language file (with category breakdown + scores)
         with open(os.path.join(args.out_dir, f"lexicon_{lang}.json"), "w", encoding="utf-8") as f:
