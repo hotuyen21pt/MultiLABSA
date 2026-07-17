@@ -91,3 +91,56 @@ from transformers import MT5ForConditionalGeneration, AutoTokenizer
 model = MT5ForConditionalGeneration.from_pretrained("hotel-mt5")
 tokenizer = AutoTokenizer.from_pretrained("hotel-mt5")
 ```
+
+
+Ý tưởng cốt lõi: bắt model đoán lại phần bị che, và mỗi lần đoán sai thì điều chỉnh trọng số. Lặp lại hàng triệu lần trên review khách sạn → model dần "thấm" ngôn ngữ và khái niệm của domain này.
+
+1. Cơ chế học: denoising (điền vào chỗ trống)
+
+Với mỗi review, ta che vài span rồi yêu cầu model tái tạo phần bị che:
+
+Gốc  : The room was very clean but the breakfast was disappointing.
+Input: The <extra_id_0> was very clean but the <extra_id_1> disappointing.
+Target: <extra_id_0> room <extra_id_1> breakfast was <extra_id_2>
+                     └─model phải đoán ra─┘
+
+Model là seq2seq (mT5): encoder đọc câu đã che, decoder sinh ra target. Muốn đoán đúng room, breakfast was, model buộc phải hiểu:
+- ngữ pháp/ngữ cảnh ("the ___ was" → một danh từ),
+- kiến thức domain: sau "clean" thường nói về room; "disappointing" hay đi với breakfast, service...
+
+Đó chính là tín hiệu học.
+
+2. Vòng học thực tế (trong trainer.py)
+
+model(**batch) → loss              # Cross-Entropy: so token model đoán vs token đúng
+loss.backward()                    # tính gradient: "sai ở đâu, sửa hướng nào"
+optimizer.step()                   # cập nhật trọng số để lần sau đoán đúng hơn
+scheduler.step()                   # điều chỉnh learning rate
+
+- Loss cao = đoán sai nhiều → gradient lớn → chỉnh mạnh.
+- Loss giảm dần theo thời gian = model đoán ngày càng đúng = đã học được domain.
+- Loss do chính MT5ForConditionalGeneration tính (mình không viết loss riêng); vị trí -100 (padding) bị bỏ qua.
+
+3. "Domain-Adaptive" nghĩa là gì
+
+Không train từ số 0. Ta khởi tạo từ trọng số google/mt5-base (đã biết đa ngôn ngữ tổng quát), rồi tiếp tục train trên riêng review khách sạn. Kết quả: model giữ khả năng ngôn ngữ chung nhưng lệch (adapt) về domain khách sạn — quen với từ vựng reception, check-in, phòng, lễ tân, cách người ta khen/chê khách sạn, ở nhiều ngôn ngữ.
+
+4. Hai "chiêu" giúp học đúng trọng tâm
+
+┌─────────────────────────┬──────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│         Cơ chế          │       File       │                                                        Model học được gì thêm                                                        │
+├─────────────────────────┼──────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Biased masking          │ masking.py +     │ Che nhiều hơn các từ hotel/opinion/negation/intensifier (room, clean, not, very...) → model bị "ép" học kỹ chính những từ quan trọng │
+│ (build_lexicon)         │ utils.py         │  cho phân tích cảm xúc khách sạn, thay vì che đại từ vô nghĩa như "the".                                                             │
+├─────────────────────────┼──────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Temperature sampling    │ dataset.py       │ Nâng tần suất ngôn ngữ hiếm (T=2.0) → model không chỉ giỏi tiếng Anh/Việt mà học đều các ngôn ngữ khác.                              │
+└─────────────────────────┴──────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Đây là lý do bạn bôi đen build_lexicon: nó quyết định model bị ép học kỹ từ nào. Ví dụ, vì not/không được che thường xuyên, model buộc phải học ngữ cảnh phủ định — rất quan trọng ("not clean" ngược nghĩa "clean").
+
+5. Vì sao che động mỗi batch lại tốt
+
+Mask được sinh mới mỗi lần lấy batch (collator.py), nên cùng một review qua các epoch bị che ở chỗ khác nhau → model thấy nhiều "biến thể" của cùng một câu → học vững hơn, ít học vẹt.
+
+---
+Tóm lại: DAPT = liên tục cho model chơi trò "điền vào chỗ trống" trên review khách sạn; mỗi lần điền sai bị phạt (loss) và chỉnh trọng số (backward + optimizer). Nhờ biased masking + temperature sampling, phần bị che tập trung vào từ vựng/cảm xúc/ngôn ngữ quan trọng, nên model hotel-mt5 cuối cùng trở thành backbone hiểu sâu ngôn ngữ domain khách sạn đa ngôn ngữ — sẵn sàng cho các bước fine-tune sau.
