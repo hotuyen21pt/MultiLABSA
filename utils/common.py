@@ -33,6 +33,27 @@ def get_device() -> "torch.device":
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def resolve_precision(requested: str) -> str:
+    """Resolve a requested precision to a concrete one usable on this machine.
+
+    Args:
+        requested: one of ``"auto"``, ``"bf16"``, ``"fp16"`` or ``"fp32"``.
+
+    Returns:
+        A concrete precision string. ``"auto"`` picks ``bf16`` when the GPU
+        supports it (Ampere+), otherwise ``fp16`` on GPU, otherwise ``fp32``.
+    """
+    import torch
+
+    if requested != "auto":
+        return requested
+    if torch.cuda.is_available():
+        if torch.cuda.is_bf16_supported():
+            return "bf16"
+        return "fp16"
+    return "fp32"
+
+
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
     """Create/return the package logger with a single stream handler."""
     logger = logging.getLogger("dual_teacher")

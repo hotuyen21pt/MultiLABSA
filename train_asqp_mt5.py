@@ -9,12 +9,22 @@ supervised seq2seq fine-tuning on the gold ASQP annotations
 string. The result is what ``teacher/generative_teacher.py``'s "already
 fine-tuned hotel-mt5" assumption actually requires.
 
+mT5-base + AdamW's two fp32 moments is ~9GB of optimizer state alone before
+activations — this reliably OOMs a 14.56GiB Kaggle T4 (the exact failure
+``dapt/train_dapt.py`` hit and fixed the same way). This script carries the
+same fix: ``--optimizer adafactor`` (factored second moment, no full first
+moment), ``--gradient_checkpointing`` (recompute activations instead of
+storing them), mixed precision, and ``--gradient_accumulation_steps`` to keep
+the effective batch size up while the per-step micro-batch stays small.
+
 Example
 -------
     python train_asqp_mt5.py \\
         --labeled_dir data_final/labeled_data/hamos26 \\
         --base_model hotel-mt5 \\
-        --num_epochs 8 --train_batch_size 8 \\
+        --optimizer adafactor --precision auto --gradient_checkpointing \\
+        --train_batch_size 2 --gradient_accumulation_steps 16 \\
+        --num_epochs 8 \\
         --output_dir checkpoints/hotel-mt5-asqp --final_dir hotel-mt5-asqp
 
     # resume from the latest checkpoint in --output_dir
@@ -35,10 +45,10 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, MT5ForConditionalGeneration, get_linear_schedule_with_warmup
+from transformers import Adafactor, AutoTokenizer, MT5ForConditionalGeneration, get_linear_schedule_with_warmup
 
 from utils.asqp_data import ASQPCollator, ASQPDataset, load_asqp_split
-from utils.common import get_device, set_seed, setup_logging
+from utils.common import get_device, resolve_precision, set_seed, setup_logging
 
 logger = setup_logging()
 
@@ -57,7 +67,11 @@ class ASQPConfig:
     max_target_length: int = 160
 
     # ---- optimisation -------------------------------------------------
+    optimizer: str = "adamw"                # adamw|adafactor (adafactor: ~4x less optimizer-state memory)
+    precision: str = "auto"                 # auto|bf16|fp16|fp32
+    gradient_checkpointing: bool = False
     train_batch_size: int = 8
+    gradient_accumulation_steps: int = 1
     eval_batch_size: int = 16
     learning_rate: float = 3e-4             # higher than DAPT's 1e-4: short supervised run, small dataset
     weight_decay: float = 0.01
@@ -88,7 +102,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max_source_length", type=int, default=256)
     p.add_argument("--max_target_length", type=int, default=160)
 
+    p.add_argument("--optimizer", default="adamw", choices=["adamw", "adafactor"],
+                   help="adafactor keeps a factored second moment (no full first moment), "
+                        "~4x smaller optimizer state than AdamW - use when it doesn't fit in GPU memory")
+    p.add_argument("--precision", default="auto", choices=["auto", "bf16", "fp16", "fp32"])
+    p.add_argument("--gradient_checkpointing", action="store_true")
     p.add_argument("--train_batch_size", type=int, default=8)
+    p.add_argument("--gradient_accumulation_steps", type=int, default=1)
     p.add_argument("--eval_batch_size", type=int, default=16)
     p.add_argument("--learning_rate", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
@@ -164,31 +184,65 @@ def _prune_checkpoints(output_dir: str, save_total_limit: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Optimizer / precision helpers                                                #
+# --------------------------------------------------------------------------- #
+def build_optimizer(model: torch.nn.Module, cfg: ASQPConfig):
+    """AdamW or Adafactor, with weight decay disabled on biases/LayerNorm."""
+    decay, no_decay = [], []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if param.ndim <= 1 or name.endswith(".bias") or "layer_norm" in name.lower():
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    groups = [
+        {"params": decay, "weight_decay": cfg.weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+    if cfg.optimizer == "adafactor":
+        # scale_parameter/relative_step/warmup_init off so Adafactor takes an
+        # explicit lr and defers warmup/decay to our own linear scheduler
+        # (its default relative_step mode ignores param_group lr entirely).
+        return Adafactor(groups, lr=cfg.learning_rate, scale_parameter=False, relative_step=False, warmup_init=False)
+    return AdamW(groups, lr=cfg.learning_rate)
+
+
+def autocast_ctx(precision: str, device: torch.device):
+    """Return the appropriate autocast context (or a no-op for fp32/CPU)."""
+    if precision in {"bf16", "fp16"} and device.type == "cuda":
+        dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+        return torch.autocast(device_type="cuda", dtype=dtype)
+    return torch.autocast(device_type="cpu", enabled=False)
+
+
+# --------------------------------------------------------------------------- #
 # Train / eval / preview                                                       #
 # --------------------------------------------------------------------------- #
-def compute_loss(model, batch: dict, label_smoothing: float) -> torch.Tensor:
-    """Label-smoothed cross-entropy over the decoder logits.
+def compute_loss(model, batch: dict, label_smoothing: float, precision: str, device: torch.device) -> torch.Tensor:
+    """Label-smoothed cross-entropy over the decoder logits, under autocast.
 
     ``labels`` is still passed to ``model(...)`` (not omitted) so HF builds
     the correct shifted ``decoder_input_ids`` internally; only the returned
     ``loss`` (plain CE, no smoothing) is discarded in favour of recomputing
     it from ``logits`` with label smoothing applied.
     """
-    outputs = model(**batch)
-    logits = outputs.logits
-    return F.cross_entropy(
-        logits.view(-1, logits.size(-1)), batch["labels"].view(-1),
-        ignore_index=-100, label_smoothing=label_smoothing,
-    )
+    with autocast_ctx(precision, device):
+        outputs = model(**batch)
+        logits = outputs.logits
+        return F.cross_entropy(
+            logits.view(-1, logits.size(-1)), batch["labels"].view(-1),
+            ignore_index=-100, label_smoothing=label_smoothing,
+        )
 
 
 @torch.no_grad()
-def evaluate(model, val_loader: DataLoader, device, label_smoothing: float) -> float:
+def evaluate(model, val_loader: DataLoader, device, label_smoothing: float, precision: str) -> float:
     model.eval()
     total, count = 0.0, 0
     for batch in val_loader:
         batch = {k: v.to(device) for k, v in batch.items()}
-        total += float(compute_loss(model, batch, label_smoothing))
+        total += float(compute_loss(model, batch, label_smoothing, precision, device))
         count += 1
     model.train()
     return total / max(1, count)
@@ -218,7 +272,8 @@ def main() -> None:
     cfg = config_from_args(args)
     set_seed(cfg.seed)
     device = get_device()
-    logger.info("Device: %s", device)
+    precision = resolve_precision(cfg.precision)
+    logger.info("Device: %s | precision: %s | optimizer: %s", device, precision, cfg.optimizer)
 
     resume_ckpt = args.resume_from
     if resume_ckpt is None and args.resume:
@@ -231,6 +286,10 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(load_from)
     model = MT5ForConditionalGeneration.from_pretrained(load_from)
     model.to(device)
+
+    if cfg.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+        model.config.use_cache = False  # incompatible with checkpointing
 
     train_pairs = load_asqp_split(cfg.labeled_dir, "train")
     val_pairs = load_asqp_split(cfg.labeled_dir, "val")
@@ -246,8 +305,11 @@ def main() -> None:
         collate_fn=collator, num_workers=cfg.num_workers,
     )
 
-    optimizer = AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
-    total_steps = max(1, len(train_loader) * cfg.num_epochs)
+    optimizer = build_optimizer(model, cfg)
+    # A GradScaler is only needed for fp16 (bf16 has fp32 dynamic range).
+    scaler = torch.cuda.amp.GradScaler(enabled=(precision == "fp16"))
+    steps_per_epoch = max(1, -(-len(train_loader) // cfg.gradient_accumulation_steps))  # ceil div
+    total_steps = max(1, steps_per_epoch * cfg.num_epochs)
     scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=int(total_steps * cfg.warmup_ratio), num_training_steps=total_steps
     )
@@ -266,28 +328,42 @@ def main() -> None:
     model.train()
     for epoch in range(start_epoch, cfg.num_epochs):
         epoch_start = time.time()
-        running_loss = 0.0
-        for step, batch in enumerate(train_loader):
-            batch = {k: v.to(device) for k, v in batch.items()}
-            loss = compute_loss(model, batch, cfg.label_smoothing)
+        running_loss, micro_steps_since_log = 0.0, 0
+        optimizer.zero_grad(set_to_none=True)
 
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
-            optimizer.step()
-            scheduler.step()
-            global_step += 1
+        for micro_step, batch in enumerate(train_loader):
+            batch = {k: v.to(device) for k, v in batch.items()}
+            loss = compute_loss(model, batch, cfg.label_smoothing, precision, device)
             running_loss += float(loss)
+            micro_steps_since_log += 1
+
+            # Normalise so accumulated grads match a full-size batch.
+            scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
+
+            is_boundary = (micro_step + 1) % cfg.gradient_accumulation_steps == 0
+            is_last = (micro_step + 1) == len(train_loader)
+            if not (is_boundary or is_last):
+                continue
+
+            # Unscale before clipping so the norm is measured in fp32.
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+            global_step += 1
 
             if global_step % cfg.logging_steps == 0:
-                logger.info("epoch %d step %d | loss %.4f", epoch, step + 1, running_loss / cfg.logging_steps)
-                running_loss = 0.0
+                logger.info("epoch %d step %d | loss %.4f", epoch, global_step,
+                            running_loss / max(1, micro_steps_since_log))
+                running_loss, micro_steps_since_log = 0.0, 0
 
             if cfg.save_steps and global_step % cfg.save_steps == 0:
                 save_checkpoint(model, tokenizer, optimizer, scheduler, global_step, epoch,
                                  cfg.output_dir, cfg.save_total_limit)
 
-        val_loss = evaluate(model, val_loader, device, cfg.label_smoothing)
+        val_loss = evaluate(model, val_loader, device, cfg.label_smoothing, precision)
         logger.info("epoch %d done in %.1fs | val_loss=%.4f", epoch, time.time() - epoch_start, val_loss)
 
         if cfg.preview_every_n_epochs and (epoch + 1) % cfg.preview_every_n_epochs == 0:
