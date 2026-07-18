@@ -9,4 +9,8 @@ __pycache__/
 # Models & training artifacts
 lid.176.bin
 hotel-mt5/
+hotel_mt5/
+hotel-mt5-asqp/
+hotel_mt5_asqp/
 checkpoints/
+pseudo_labels.json

@@ -1,0 +1,5 @@
+# Extra deps for Kaggle notebooks: torch/transformers/pandas/numpy/tqdm are
+# already preinstalled there, so only what's missing goes here.
+# Usage: pip install -r requirements-kaggle.txt
+sentencepiece>=0.1.99   # required by the mT5 (hotel-mt5) tokenizer
+protobuf>=3.20          # required to load the mT5 SentencePiece model
