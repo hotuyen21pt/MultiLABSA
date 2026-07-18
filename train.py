@@ -44,6 +44,8 @@ from teacher.confidence_fusion import FusionWeights, fuse
 from teacher.disagreement import DisagreementWeights, compute_agreement
 from teacher.extractive_teacher import ExtractiveTeacher
 from teacher.generative_teacher import GenerativeTeacher
+from teacher.multiview import MultiViewGenerativeTeacher, MultiViewWeights
+from teacher.translator import NLLBTranslator
 from utils.common import Config, count_parameters, get_device, set_seed, setup_logging
 from utils.data import ExtractiveCollator, ExtractiveDataset, load_split
 
@@ -67,6 +69,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gen_max_source_length", type=int, default=256)
     p.add_argument("--gen_max_target_length", type=int, default=160)
     p.add_argument("--gen_num_beams", type=int, default=4)
+
+    # multi-view pseudo-label generation (native / translate-to-EN / back-translation)
+    p.add_argument("--multiview", action="store_true",
+                   help="Run T_G on 3 views per review (native, translated-to-English, "
+                        "back-translated) and reconcile via self-consistency voting instead "
+                        "of a single native-language prediction. Needs --lang_column in "
+                        "--unlabeled_csv (fastText 'language' code) to pick translation directions.")
+    p.add_argument("--translator_model", default="facebook/nllb-200-distilled-600M")
+    p.add_argument("--lang_column", default="language")
+    p.add_argument("--multiview_min_agreeing_views", type=int, default=2)
+    p.add_argument("--multiview_confidence_boost", type=float, default=0.15)
+    p.add_argument("--multiview_pivot_lang", default="fra_Latn",
+                   help="Back-translation pivot language for reviews already in English")
 
     # extractive teacher
     p.add_argument("--extractive_backbone", default="xlm-roberta-base")
@@ -234,10 +249,35 @@ def run_pseudo_labeling(cfg: Config, extractive_teacher: ExtractiveTeacher, toke
         )
         return
 
+    multiview_teacher: Optional[MultiViewGenerativeTeacher] = None
+    if cfg.multiview:
+        translator = NLLBTranslator(model_name=cfg.translator_model, device=device)
+        multiview_teacher = MultiViewGenerativeTeacher(
+            generative_teacher, translator,
+            weights=MultiViewWeights(
+                min_agreeing_views=cfg.multiview_min_agreeing_views,
+                confidence_boost_per_view=cfg.multiview_confidence_boost,
+                pivot_lang_for_english=cfg.multiview_pivot_lang,
+            ),
+        )
+        logger.info("Multi-view pseudo-labeling enabled (translator: %s)", cfg.translator_model)
+
     df = pd.read_csv(cfg.unlabeled_csv)
-    texts: List[str] = df[cfg.text_column].dropna().astype(str).tolist()
+    df = df.dropna(subset=[cfg.text_column])
+    texts: List[str] = df[cfg.text_column].astype(str).tolist()
+    if cfg.multiview and cfg.lang_column in df.columns:
+        langs: List[Optional[str]] = df[cfg.lang_column].tolist()
+    else:
+        if cfg.multiview:
+            logger.warning(
+                "--multiview set but '%s' column not found in %s; every review will be "
+                "treated as English (View 2/3 translation becomes a no-op).",
+                cfg.lang_column, cfg.unlabeled_csv,
+            )
+        langs = [None] * len(texts)
     if cfg.max_unlabeled_samples:
         texts = texts[: cfg.max_unlabeled_samples]
+        langs = langs[: cfg.max_unlabeled_samples]
     logger.info("Running dual-teacher inference over %d unlabeled reviews", len(texts))
 
     disagreement_weights = DisagreementWeights(
@@ -256,8 +296,12 @@ def run_pseudo_labeling(cfg: Config, extractive_teacher: ExtractiveTeacher, toke
     batch_size = cfg.inference_batch_size
     for start in range(0, len(texts), batch_size):
         batch_texts = texts[start : start + batch_size]
+        batch_langs = langs[start : start + batch_size]
 
-        gen_predictions = generative_teacher.predict(batch_texts)
+        if multiview_teacher is not None:
+            gen_predictions = multiview_teacher.predict(batch_texts, batch_langs)
+        else:
+            gen_predictions = generative_teacher.predict(batch_texts)
         ext_predictions = extractive_teacher.predict(
             batch_texts, tokenizer, device, relation_threshold=cfg.relation_threshold
         )

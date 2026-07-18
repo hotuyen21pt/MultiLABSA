@@ -89,6 +89,14 @@ class Config:
     gen_max_target_length: int = 160
     gen_num_beams: int = 4
 
+    # ---- Multi-view Pseudo-label Generation (native / translate-to-EN / back-translation) --
+    multiview: bool = False
+    translator_model: str = "facebook/nllb-200-distilled-600M"
+    lang_column: str = "language"
+    multiview_min_agreeing_views: int = 2
+    multiview_confidence_boost: float = 0.15
+    multiview_pivot_lang: str = "fra_Latn"
+
     # ---- Extractive Teacher (T_E) -----------------------------------------
     extractive_backbone: str = "xlm-roberta-base"
     relation_proj_size: int = 256
