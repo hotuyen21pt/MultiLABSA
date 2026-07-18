@@ -314,6 +314,15 @@ def run_pseudo_labeling(cfg: Config, extractive_teacher: ExtractiveTeacher, toke
             if fused:
                 pseudo_labeled_reviews.append({"review": text, "quads": fused})
 
+        if device.type == "cuda":
+            # Three resident models (T_G, T_E, and — with --multiview — the
+            # NLLB translator) plus compute_transition_scores' full-vocab
+            # score stack leave little headroom on a 14.56GiB T4; release
+            # cached blocks every batch so the allocator doesn't balloon
+            # across wildly different tensor shapes (translation vs.
+            # generation) over a long run.
+            torch.cuda.empty_cache()
+
         if (start // batch_size) % 10 == 0:
             logger.info("  processed %d/%d reviews", min(start + batch_size, len(texts)), len(texts))
 
