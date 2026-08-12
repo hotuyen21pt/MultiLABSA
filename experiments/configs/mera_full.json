@@ -1,0 +1,18 @@
+{
+  "method": "MERA-XQUAD",
+  "track": "semi_supervised",
+  "description": "Full MERA-XQUAD: dual teacher + multi-view + reliability/routing + hybrid student self-training (§4).",
+  "entry": "student.train_student",
+  "train_args": {
+    "student_backbone": "hotel-mt5-asqp",
+    "generative_model": "hotel-mt5-asqp",
+    "extractive_checkpoint": "checkpoints/dual-teacher/extractive_teacher.pt",
+    "rounds": 3,
+    "max_pool_per_round": 2000,
+    "multiview": true
+  },
+  "eval_args": {
+    "track": "semi_supervised",
+    "seeds": [42, 43, 44]
+  }
+}

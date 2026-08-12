@@ -221,3 +221,22 @@ của HuggingFace Hub, tự động tải về khi chạy lần đầu**.
 
 GPU nhanh hơn ~10×: cài torch CUDA trong `Dockerfile.infer` + chạy với `--gpus all`
 (và bỏ comment khối `deploy` trong `docker-compose.yml`).
+
+---
+
+## 9. Thí nghiệm & bảng so sánh (MERA-XQUAD đầy đủ)
+
+Các bước nghiên cứu còn lại (student self-training, baselines, đánh giá §6, ablation §7)
+nằm trong khung thí nghiệm riêng, mỗi bước một folder + notebook Kaggle:
+
+| Folder | Nội dung | Notebook |
+|---|---|---|
+| `experiments/common/` | metrics (§6.2), bảng so sánh (§6.3), significance (§7.3) — **đã unit-test** | — |
+| `student/` | Hybrid student + implicit heads + multi-objective loss + EMA/curriculum (§4.7/4.9/4.10) | `student-kaggle.ipynb` |
+| `baselines/` | M1 zero-shot, M3 translate-test, … (§3) | `baselines-kaggle.ipynb` |
+| `evaluation/` | chấm điểm → `results.json` → Table 1–8 (§6), ablation (§7) | `evaluation-kaggle.ipynb` |
+
+**Cách làm chi tiết:** xem `experiments/README.md`. Ý tưởng: mỗi lần chạy (baseline /
+student / ablation) ghi một `results/<case_id>.json` cùng schema → `evaluation/make_tables.py`
+gom cả thư mục thành các bảng so sánh (mean±std theo seed) — thêm trường hợp chỉ cần
+thả thêm một file json, không sửa code.

@@ -1,0 +1,14 @@
+{
+  "method": "M1_zeroshot",
+  "track": "zero_shot",
+  "description": "T_G predicts directly on the native-language review (transfer floor, §3).",
+  "entry": "baselines.run_baseline",
+  "predict_args": {
+    "baseline": "zero_shot",
+    "generative_model": "hotel-mt5-asqp"
+  },
+  "eval_args": {
+    "track": "zero_shot",
+    "seeds": [42, 43, 44]
+  }
+}

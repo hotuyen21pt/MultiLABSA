@@ -46,7 +46,7 @@ LANG_CHOICES = ["auto"] + sorted(FASTTEXT_TO_NLLB.keys())  # en, vi, fr, de, ...
 _DISAGREEMENT = DisagreementWeights()
 # threshold=0.2 (thay vì 0.5) để hợp với inference: quad chỉ-T_G có
 # final_score = 0.4*conf_g <= 0.4, ngưỡng 0.5 sẽ loại sạch mọi ngôn ngữ.
-_FUSION = FusionWeights(threshold=0.2)
+_FUSION = FusionWeights(threshold=0.5)
 
 
 # --------------------------------------------------------------------------- #

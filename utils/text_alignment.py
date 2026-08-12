@@ -22,6 +22,14 @@ from utils.label_maps import BIO2ID, ID2BIO, IGNORE_INDEX
 
 _PUNCT_RE = re.compile(r"[^\w]+", re.UNICODE)
 
+# Scripts written without whitespace word boundaries (Japanese, Chinese, Korean,
+# Thai). For these, ``str.split()``-based tokenisation cannot isolate a single
+# word, so ``contains_phrase`` falls back to substring matching for such needles.
+_NO_SPACE_SCRIPT = re.compile(
+    "[\u1100-\u11ff\u3040-\u30ff\u3130-\u318f\u3400-\u9fff"
+    "\uac00-\ud7af\uf900-\ufaff\u0e00-\u0e7f]"  # CJK / Kana / Hangul / Thai
+)
+
 
 # --------------------------------------------------------------------------- #
 # Word tokenisation (must match how the gold spans were produced: split())     #
@@ -78,7 +86,20 @@ def contains_phrase(haystack: str, needle: str) -> bool:
     if not needle_tokens:
         return False
     haystack_tokens = token_set(haystack)
-    return needle_tokens.issubset(haystack_tokens)
+    if needle_tokens.issubset(haystack_tokens):
+        return True
+
+    # Whitespace tokenisation cannot isolate a single word in scripts written
+    # without spaces (Japanese/Chinese/Korean/Thai), so the aspect token never
+    # equals a haystack token and every such quad would be wrongly dropped as a
+    # hallucination. For those needles, fall back to space-stripped substring
+    # containment. English (and other space-delimited) needles are unaffected —
+    # they don't match _NO_SPACE_SCRIPT and keep the strict token-subset check.
+    if _NO_SPACE_SCRIPT.search(needle):
+        stripped_needle = normalize(needle).replace(" ", "")
+        stripped_haystack = normalize(haystack).replace(" ", "")
+        return bool(stripped_needle) and stripped_needle in stripped_haystack
+    return False
 
 
 # --------------------------------------------------------------------------- #

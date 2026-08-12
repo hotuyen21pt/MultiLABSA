@@ -1,0 +1,15 @@
+{
+  "method": "M3_translate_test",
+  "track": "native_vs_translated",
+  "description": "Translate review to English (NLLB), predict with T_G (§3).",
+  "entry": "baselines.run_baseline",
+  "predict_args": {
+    "baseline": "translate_test",
+    "generative_model": "hotel-mt5-asqp",
+    "translator_model": "facebook/nllb-200-distilled-600M"
+  },
+  "eval_args": {
+    "track": "native_vs_translated",
+    "seeds": [42, 43, 44]
+  }
+}

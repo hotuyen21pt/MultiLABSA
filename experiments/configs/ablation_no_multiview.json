@@ -1,0 +1,16 @@
+{
+  "method": "MERA-XQUAD",
+  "track": "semi_supervised",
+  "ablation": "no_multiview",
+  "description": "Ablation §7.1: remove multi-view to measure view-stability contribution.",
+  "entry": "student.train_student",
+  "train_args": {
+    "student_backbone": "hotel-mt5-asqp",
+    "rounds": 3,
+    "no_multiview": true
+  },
+  "eval_args": {
+    "track": "semi_supervised",
+    "seeds": [42, 43, 44]
+  }
+}
