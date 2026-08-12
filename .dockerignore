@@ -1,5 +1,15 @@
-# Keep the build context tiny — data is mounted at runtime, not built in.
+# Giữ build context nhỏ — model & data được mount lúc chạy, không build vào image.
 data_final/
+data/
+hotel-mt5-asqp/
+checkpoints/
+hf-cache/
 *.zip
+*.safetensors
+*.pt
+*.bin
 lid.176.bin
+*.docx
+*.ipynb
+__pycache__/
 .git/

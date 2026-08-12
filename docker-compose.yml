@@ -1,0 +1,22 @@
+# Chạy inference + UI:  docker compose up --build
+# -> mở http://localhost:7860
+services:
+  infer:
+    build:
+      context: .
+      dockerfile: Dockerfile.infer
+    image: multilabsa-infer
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./hotel-mt5-asqp:/app/hotel-mt5-asqp   # T_G
+      - ./checkpoints:/app/checkpoints         # T_E (+ multiview nếu có)
+      - ./hf-cache:/hf-cache                   # cache xlm-roberta-base / NLLB
+    # GPU: bỏ comment khối dưới và cài torch bản CUDA trong Dockerfile.infer
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

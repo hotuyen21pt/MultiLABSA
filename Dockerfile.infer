@@ -1,0 +1,59 @@
+# Inference image cho Dual-Teacher ASQP (T_G = hotel-mt5-asqp, T_E = extractive_teacher.pt)
+# + UI Gradio. Mặc định CPU. Xem cuối file cho biến thể GPU.
+#
+# Build:
+#   docker build -f Dockerfile.infer -t multilabsa-infer .
+#
+# Chạy UI (mount model lúc chạy, không nhét vào image):
+#   docker run --rm -p 7860:7860 \
+#     -v "$(pwd)/hotel-mt5-asqp:/app/hotel-mt5-asqp" \
+#     -v "$(pwd)/checkpoints:/app/checkpoints" \
+#     -v "$(pwd)/hf-cache:/hf-cache" \
+#     multilabsa-infer
+#   -> mở http://localhost:7860
+#
+# Chạy 1 câu (không cần T_E/internet):
+#   docker run --rm \
+#     -v "$(pwd)/hotel-mt5-asqp:/app/hotel-mt5-asqp" \
+#     -v "$(pwd)/checkpoints:/app/checkpoints" \
+#     multilabsa-infer \
+#     python infer.py --text "Phòng rất sạch nhưng bữa sáng thì tệ." --lang vi --generative_only
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# torch bản CPU (nhẹ) trước, rồi các dependency còn lại.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir \
+      "transformers>=4.40" \
+      "sentencepiece>=0.1.99" \
+      "protobuf>=3.20" \
+      "pandas>=2.0" \
+      "numpy>=1.24" \
+      "tqdm>=4.66" \
+      gradio
+
+# Chỉ copy MÃ NGUỒN; model được mount lúc chạy (-v) để image nhỏ.
+COPY teacher/ ./teacher/
+COPY models/ ./models/
+COPY utils/ ./utils/
+COPY infer.py app.py ./
+
+# HF cache đặt trên volume mount để xlm-roberta-base / NLLB tải 1 lần rồi tái dùng.
+ENV HF_HOME=/hf-cache \
+    GRADIO_SERVER_NAME=0.0.0.0 \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 7860
+
+# Mặc định mở UI Gradio. Override bằng: docker run ... python infer.py ...
+CMD ["python", "app.py"]
+
+# --------------------------------------------------------------------------- #
+# Biến thể GPU (tùy chọn)
+#   1) Đổi dòng cài torch thành bản CUDA khớp driver, ví dụ:
+#        RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu121
+#      (hoặc dùng base image: FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 + cài python)
+#   2) Chạy kèm: docker run --gpus all ...
+# --------------------------------------------------------------------------- #

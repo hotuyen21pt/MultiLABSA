@@ -5,6 +5,11 @@ data_final/
 # Python
 __pycache__/
 *.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+.ipynb_checkpoints/
 
 # Models & training artifacts
 lid.176.bin
@@ -14,3 +19,32 @@ hotel-mt5-asqp/
 hotel_mt5_asqp/
 checkpoints/
 pseudo_labels.json
+
+# Model weight files (safety net — không đẩy trọng số lên GitHub)
+*.safetensors
+*.pt
+*.pth
+*.bin
+*.onnx
+*.gguf
+*.ckpt
+*.h5
+
+# HuggingFace / model cache (rất nặng — do Docker mount tạo ra)
+hf-cache/
+.cache/
+
+# Logs
+*.log
+
+# Office temp/lock files
+~$*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code (config/session/memory cục bộ)
+.claude/
