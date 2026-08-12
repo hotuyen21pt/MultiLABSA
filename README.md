@@ -132,6 +132,22 @@ python infer.py --text "..." --generative_only  # CLI
 | **+ T_E** (mặc định) | Thêm `xlm-roberta-base` (tải vào `hf-cache`) | ~3 s/câu |
 | **+ Multi-view** (`--multiview`) | Thêm NLLB-200 (tải vào `hf-cache`) | ~15–40 s/câu |
 
+**Định dạng mỗi quad trong output** (MERA-XQUAD §4.4–4.8):
+
+```json
+{
+  "aspect": "phòng", "opinion": "sạch", "category": "FACILITY", "sentiment": "positive",
+  "conf_g": 0.94, "conf_e": 0.80, "agreement": 1.0, "final_score": 0.90,
+  "reliability": { "r_AT": .., "r_AC": .., "r_OT": .., "r_SP": .., "r_rel": .., "r_quad": .. },
+  "route": "full",
+  "sources": ["generative", "extractive"]
+}
+```
+
+- **QUAD matching**: ghép quad T_G↔T_E bằng **Hungarian matching** (gán tối ưu toàn cục, `scipy`; có fallback thuần Python) thay vì greedy.
+- **`reliability`**: reliability theo từng element (`r_AT/r_AC/r_OT/r_SP`), theo quan hệ (`r_rel`) và tổng hợp (`r_quad` = trung bình nhân).
+- **`route`**: `full` / `partial` / `verifier` / `consistency` / `deferred` — quyết định cách dùng quad trong self-training (quad không được kiểm chứng chéo → `deferred`).
+
 ---
 
 ## 6. `hf-cache/` được tải như thế nào

@@ -31,6 +31,7 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
       "protobuf>=3.20" \
       "pandas>=2.0" \
       "numpy>=1.24" \
+      "scipy>=1.10" \
       "tqdm>=4.66" \
       gradio
 

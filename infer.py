@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--alpha", type=float, default=0.4)
     p.add_argument("--beta", type=float, default=0.4)
     p.add_argument("--gamma", type=float, default=0.2)
-    p.add_argument("--final_score_threshold", type=float, default=0.5)
+    p.add_argument("--final_score_threshold", type=float, default=0.2)
 
     p.add_argument("--inference_batch_size", type=int, default=16)
     return p.parse_args()

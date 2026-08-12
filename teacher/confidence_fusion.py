@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List
 
+from teacher.reliability import quad_reliability
+from teacher.routing import RoutingThresholds, route_quad
 from utils.schema import MergedPrediction
 
 
@@ -34,13 +36,24 @@ def final_score(m: MergedPrediction, weights: FusionWeights) -> float:
     return weights.alpha * m.conf_g + weights.beta * m.conf_e + weights.gamma * m.agreement
 
 
-def fuse(merged_predictions: List[MergedPrediction], weights: FusionWeights = None) -> List[dict]:
+def fuse(
+    merged_predictions: List[MergedPrediction],
+    weights: FusionWeights = None,
+    routing_thresholds: RoutingThresholds = None,
+) -> List[dict]:
     """Score every merged quad and keep those above ``weights.threshold``.
 
     Returns plain dicts (ready for ``json.dump``), sorted by descending
     FinalScore, each carrying the full audit trail (Conf_G, Conf_E,
     Agreement, FinalScore, contributing sources) so a human/downstream
     student model can inspect *why* a pseudo label was accepted.
+
+    Each record is also enriched (MERA-XQUAD §4.5–4.8) with:
+        * ``reliability`` — element-wise (r_AT/r_AC/r_OT/r_SP), relation-aware
+          (r_rel) and overall (r_quad) reliability;
+        * ``route`` — the confidence–stability route
+          (full / partial / verifier / consistency / deferred) telling a
+          self-training loop how to use this quad.
     """
     weights = weights or FusionWeights()
     scored: List[dict] = []
@@ -49,6 +62,9 @@ def fuse(merged_predictions: List[MergedPrediction], weights: FusionWeights = No
         if score > weights.threshold:
             record = m.to_dict()
             record["final_score"] = round(score, 4)
+            reliability = quad_reliability(m)
+            record["reliability"] = {k: round(v, 4) for k, v in reliability.items()}
+            record["route"] = route_quad(m, reliability, routing_thresholds)
             scored.append(record)
     scored.sort(key=lambda r: r["final_score"], reverse=True)
     return scored

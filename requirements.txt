@@ -6,4 +6,5 @@ sentencepiece>=0.1.99   # required by the mT5 tokenizer
 protobuf>=3.20          # required to load the mT5 SentencePiece model
 pandas>=2.0
 numpy>=1.24
+scipy>=1.10          # Hungarian matching (teacher/disagreement.py); optional — có fallback thuần Python
 tqdm>=4.66

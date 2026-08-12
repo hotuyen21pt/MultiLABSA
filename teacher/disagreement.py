@@ -44,18 +44,101 @@ class DisagreementWeights:
     match_threshold: float = 0.3   # min agreement score to accept a gen<->ext match
 
 
-def _pair_agreement(g: QuadPrediction, e: QuadPrediction, weights: DisagreementWeights) -> float:
-    """Weighted agreement between one generative quad and one extractive quad."""
+def _agreement_breakdown(
+    g: QuadPrediction, e: QuadPrediction, weights: DisagreementWeights
+) -> Tuple[float, dict]:
+    """Weighted agreement between a gen and an ext quad, plus its component breakdown.
+
+    The breakdown (per-component overlaps/matches) is carried onto the merged
+    quad so ``teacher/reliability.py`` can derive element-wise reliability from
+    the same signals, rather than recomputing them.
+    """
     aspect_overlap = token_jaccard(g.aspect, e.aspect)
     opinion_overlap = token_jaccard(g.opinion, e.opinion)
     category_match = 1.0 if g.category.upper() == e.category.upper() else 0.0
     sentiment_match = 1.0 if g.sentiment.lower() == e.sentiment.lower() else 0.0
-    return (
+    score = (
         weights.aspect_overlap * aspect_overlap
         + weights.opinion_overlap * opinion_overlap
         + weights.category_match * category_match
         + weights.sentiment_match * sentiment_match
     )
+    breakdown = {
+        "aspect_overlap": aspect_overlap,
+        "opinion_overlap": opinion_overlap,
+        "category_match": category_match,
+        "sentiment_match": sentiment_match,
+    }
+    return score, breakdown
+
+
+def _pair_agreement(g: QuadPrediction, e: QuadPrediction, weights: DisagreementWeights) -> float:
+    """Weighted agreement between one generative quad and one extractive quad."""
+    return _agreement_breakdown(g, e, weights)[0]
+
+
+def _optimal_assignment(score_matrix: List[List[float]], threshold: float) -> List[Tuple[int, int]]:
+    """Globally-optimal 1-to-1 assignment maximising total agreement (MERA-XQUAD §4.4).
+
+    Returns the list of ``(gen_idx, ext_idx)`` pairs whose score clears
+    ``threshold``. Greedy matching (claim-your-best-first) can be globally
+    sub-optimal — one quad grabbing a shared partner blocks a better overall
+    pairing — so we solve the assignment problem instead:
+
+        * ``scipy.optimize.linear_sum_assignment`` (Hungarian) when SciPy is
+          installed — the intended implementation;
+        * an exact brute force over the smaller dimension when the matrix is
+          tiny (the normal case: a review has only a handful of quads), so the
+          optimum is still reached with zero extra dependencies;
+        * a greedy fallback only for the (unrealistic) large-matrix case.
+    """
+    n = len(score_matrix)
+    m = len(score_matrix[0]) if n else 0
+    if n == 0 or m == 0:
+        return []
+
+    try:  # preferred: Hungarian algorithm
+        import numpy as _np
+        from scipy.optimize import linear_sum_assignment
+
+        rows, cols = linear_sum_assignment(-_np.asarray(score_matrix, dtype=float))
+        return [(int(i), int(j)) for i, j in zip(rows, cols) if score_matrix[i][j] >= threshold]
+    except Exception:
+        pass
+
+    if min(n, m) <= 7:  # exact optimum, dependency-free (quad counts are tiny)
+        import itertools
+
+        best_pairs: List[Tuple[int, int]] = []
+        best_total = -1.0
+        if n <= m:
+            for cols in itertools.permutations(range(m), n):
+                total = sum(score_matrix[i][cols[i]] for i in range(n))
+                if total > best_total:
+                    best_total, best_pairs = total, [(i, cols[i]) for i in range(n)]
+        else:
+            for rows in itertools.permutations(range(n), m):
+                total = sum(score_matrix[rows[j]][j] for j in range(m))
+                if total > best_total:
+                    best_total, best_pairs = total, [(rows[j], j) for j in range(m)]
+        return [(i, j) for i, j in best_pairs if score_matrix[i][j] >= threshold]
+
+    # greedy fallback (large matrices only)
+    ranked = sorted(
+        ((score_matrix[i][j], i, j) for i in range(n) for j in range(m)), reverse=True
+    )
+    used_i: set = set()
+    used_j: set = set()
+    pairs: List[Tuple[int, int]] = []
+    for score, i, j in ranked:
+        if score < threshold:
+            break
+        if i in used_i or j in used_j:
+            continue
+        used_i.add(i)
+        used_j.add(j)
+        pairs.append((i, j))
+    return pairs
 
 
 def filter_hallucinations(
@@ -84,21 +167,23 @@ def compute_agreement(
     weights = weights or DisagreementWeights()
     gen_quads, _num_hallucinated = filter_hallucinations(gen_quads, source_text)
 
-    matched_ext_indices: set = set()
     merged: List[MergedPrediction] = []
+    matched_gen: set = set()
+    matched_ext: set = set()
 
-    for g in gen_quads:
-        best_idx, best_score = None, 0.0
-        for j, e in enumerate(ext_quads):
-            if j in matched_ext_indices:
-                continue
-            score = _pair_agreement(g, e, weights)
-            if score > best_score:
-                best_idx, best_score = j, score
+    # Optimal 1-to-1 matching between the two teachers' quads (Hungarian /
+    # exact assignment) instead of greedy best-first — see _optimal_assignment.
+    if gen_quads and ext_quads:
+        score_matrix: List[List[float]] = [[0.0] * len(ext_quads) for _ in gen_quads]
+        breakdowns: List[List[dict]] = [[{} for _ in ext_quads] for _ in gen_quads]
+        for i, g in enumerate(gen_quads):
+            for j, e in enumerate(ext_quads):
+                score_matrix[i][j], breakdowns[i][j] = _agreement_breakdown(g, e, weights)
 
-        if best_idx is not None and best_score >= weights.match_threshold:
-            e = ext_quads[best_idx]
-            matched_ext_indices.add(best_idx)
+        for i, j in _optimal_assignment(score_matrix, weights.match_threshold):
+            g, e = gen_quads[i], ext_quads[j]
+            matched_gen.add(i)
+            matched_ext.add(j)
             merged.append(
                 MergedPrediction(
                     aspect=g.aspect,
@@ -107,30 +192,33 @@ def compute_agreement(
                     sentiment=g.sentiment,
                     conf_g=g.confidence,
                     conf_e=e.confidence,
-                    agreement=best_score,
+                    agreement=score_matrix[i][j],
                     sources=["generative", "extractive"],
-                )
-            )
-        else:
-            # No corroborating extractive quad: agreement=0, conf_e=0 — this
-            # quad's FinalScore can only ever come from Conf_G alone.
-            merged.append(
-                MergedPrediction(
-                    aspect=g.aspect,
-                    opinion=g.opinion,
-                    category=g.category,
-                    sentiment=g.sentiment,
-                    conf_g=g.confidence,
-                    conf_e=0.0,
-                    agreement=0.0,
-                    sources=["generative"],
+                    **breakdowns[i][j],
                 )
             )
 
-    for j, e in enumerate(ext_quads):
-        if j in matched_ext_indices:
+    # Generative-only quads: agreement=0, conf_e=0 — FinalScore from Conf_G alone.
+    for i, g in enumerate(gen_quads):
+        if i in matched_gen:
             continue
-        # Extractive-only proposal: symmetric treatment, conf_g=0.
+        merged.append(
+            MergedPrediction(
+                aspect=g.aspect,
+                opinion=g.opinion,
+                category=g.category,
+                sentiment=g.sentiment,
+                conf_g=g.confidence,
+                conf_e=0.0,
+                agreement=0.0,
+                sources=["generative"],
+            )
+        )
+
+    # Extractive-only quads: symmetric treatment, conf_g=0.
+    for j, e in enumerate(ext_quads):
+        if j in matched_ext:
+            continue
         merged.append(
             MergedPrediction(
                 aspect=e.aspect,

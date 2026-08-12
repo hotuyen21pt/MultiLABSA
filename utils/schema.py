@@ -55,6 +55,13 @@ class MergedPrediction:
     conf_g: float
     conf_e: float
     agreement: float
+    # Per-component agreement breakdown (populated by the disagreement module when
+    # a gen<->ext match is found; 0.0 for single-teacher quads). Consumed by
+    # ``teacher/reliability.py`` to derive element-wise reliability scores.
+    aspect_overlap: float = 0.0
+    opinion_overlap: float = 0.0
+    category_match: float = 0.0
+    sentiment_match: float = 0.0
     sources: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
