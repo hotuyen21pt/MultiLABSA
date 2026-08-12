@@ -1,0 +1,297 @@
+<meta charset="utf-8">
+<style>
+  body { font-family: 'Segoe UI', Calibri, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.45; }
+  h1 { font-size: 20pt; color: #0b3d91; border-bottom: 2px solid #0b3d91; padding-bottom: 6px; }
+  h2 { font-size: 15pt; color: #0b3d91; margin-top: 22px; border-bottom: 1px solid #c9d6ea; padding-bottom: 3px; }
+  h3 { font-size: 12.5pt; color: #14477d; margin-top: 16px; }
+  code, .mono { font-family: Consolas, 'Courier New', monospace; font-size: 10pt; background: #f2f4f8; padding: 1px 4px; border-radius: 3px; }
+  pre { font-family: Consolas, 'Courier New', monospace; font-size: 9.5pt; background: #f5f7fa; border: 1px solid #d5dde8; border-radius: 4px; padding: 10px; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 10pt; }
+  th, td { border: 1px solid #b7c3d6; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #dfe7f3; color: #0b3d91; }
+  tr:nth-child(even) td { background: #f6f8fb; }
+  .ok { color: #1a7f37; font-weight: bold; }
+  .partial { color: #b26a00; font-weight: bold; }
+  .no { color: #b3261e; font-weight: bold; }
+  .meta { color: #555; font-size: 10pt; }
+  .callout { background: #eef4ff; border-left: 4px solid #0b3d91; padding: 8px 12px; margin: 10px 0; }
+  ul { margin-top: 4px; }
+  /* Flowchart */
+  .node { border: 1.5px solid #0b3d91; border-radius: 6px; padding: 8px 12px; margin: 0 auto; width: 78%;
+          text-align: center; font-size: 10pt; }
+  .n-data  { background: #fff4e0; border-color: #d08a00; }
+  .n-step  { background: #eaf1fb; border-color: #0b3d91; }
+  .n-model { background: #e6f4ea; border-color: #1a7f37; }
+  .n-out   { background: #f3e8fb; border-color: #6a3f9c; }
+  .arrow   { text-align: center; color: #0b3d91; font-size: 13pt; margin: 3px 0; }
+  .ex { background: #fffbe6; border-left: 4px solid #d08a00; padding: 3px 8px; border-radius: 3px; font-size: 9.5pt; }
+</style>
+
+<h1>Báo cáo kỹ thuật — Pipeline MultiLABSA / MERA-XQUAD</h1>
+<p class="meta">
+<b>Chủ đề:</b> Multilingual Aspect Sentiment Quad Prediction (ASQP) cho hotel reviews — hiện trạng triển khai kho mã.<br>
+<b>Phương pháp:</b> MERA-XQUAD — Multilingual Element–Relation-Aware Semi-supervised Learning.<br>
+<b>Phạm vi báo cáo:</b> Mô tả những gì kho mã <i>đã hiện thực hoá</i>, mỗi bước dùng thư viện/công nghệ nào và xử lý ra sao, đối chiếu với thiết kế trong tài liệu <span class="mono">MultiLABSA.docx</span>. Kèm sơ đồ luồng và một ví dụ xuyên suốt.
+</p>
+
+<h2>1. Tổng quan &amp; mục tiêu bài toán</h2>
+<p>
+Bài toán đích là <b>Aspect Sentiment Quad Prediction (ASQP)</b>: với mỗi câu review khách sạn, trích xuất tất cả bộ tứ
+<b>(aspect term, opinion term, aspect category, sentiment polarity)</b>, bao gồm cả trường hợp aspect/opinion ẩn (implicit).
+Điểm khác biệt so với đa số nghiên cứu hiện có là <b>bối cảnh đa ngôn ngữ tự nhiên</b> (English gold + dữ liệu chưa gán nhãn nhiều ngôn ngữ: VI, DE, IT, JA, FR, ES, NL, RU, KO, ZH…).
+</p>
+<p>
+Kho mã hiện thực hoá <b>một phần</b> khung MERA-XQUAD: đã hoàn thiện <b>pipeline sinh nhãn giả (pseudo-labeling) đa ngôn ngữ theo cơ chế hai giáo viên (dual-teacher)</b>,
+kết thúc ở đầu ra <span class="mono">pseudo_labels.json</span>. Việc huấn luyện <i>student</i>, EMA/curriculum và các vòng self-training lặp lại chưa được triển khai (chi tiết ở §8).
+</p>
+<p>
+<b>Nền tảng công nghệ:</b> PyTorch ≥ 2.1, HuggingFace Transformers ≥ 4.40, fastText, wordfreq, pandas/numpy, sentencepiece/protobuf.
+Tối ưu để chạy trên GPU T4 (Kaggle, 14.56 GiB) bằng mixed precision, gradient checkpointing, Adafactor và gradient accumulation.
+</p>
+
+<h2>2. Sơ đồ luồng tổng thể</h2>
+
+<div class="node n-data">📄 Review khách sạn chưa gán nhãn (đa ngôn ngữ)</div>
+<div class="arrow">▼</div>
+<div class="node n-step"><b>Bước 0 · Language ID</b><br>fastText <span class="mono">lid.176</span> → <span class="mono">language</span> + <span class="mono">score</span></div>
+<div class="arrow">▼</div>
+<div class="node n-step"><b>Bước 1 · Domain Lexicon</b><br>Log-Weirdness + PMI + fastText skip-gram → <span class="mono">lexicon.json</span></div>
+<div class="arrow">▼</div>
+<div class="node n-model"><b>Bước 2 · Hotel-DAPT</b> (Thành phần A)<br>mT5-base + span corruption + biased masking + temperature sampling → <span class="mono">hotel-mt5/</span></div>
+<div class="arrow">▼</div>
+<div class="node n-model"><b>Bước 3 · Fine-tune ASQP</b> (seq2seq có giám sát) → <b>Generative Teacher T_G</b></div>
+<div class="arrow">▼</div>
+
+<table style="width:92%; margin:0 auto; border:none;">
+<tr style="border:none;">
+<td style="border:none; width:50%; padding:4px;">
+  <div class="node n-model" style="width:96%; background:#e6f4ea;">
+    <b>Nhánh sinh (Generative)</b><br>
+    Bước 4 · T_G: beam search → parse quads → <b>Conf_G</b> (log-prob)<br>
+    Bước 5 · Multi-view (NLLB-200): Native / EN / Back-translation → vote ≥2/3
+  </div>
+</td>
+<td style="border:none; width:50%; padding:4px;">
+  <div class="node n-step" style="width:96%; background:#eaf1fb;">
+    <b>Nhánh trích (Extractive)</b><br>
+    Bước 6 · T_E: XLM-R + SpanHead / RelationHead(biaffine) / ClassificationHead<br>
+    → quads + <b>Conf_E</b> (geometric mean)
+  </div>
+</td>
+</tr>
+</table>
+
+<div class="arrow">▼&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▼</div>
+<div class="node n-step"><b>Bước 7 · Architectural Disagreement</b><br>Lọc hallucination (aspect phải có trong review) + so khớp T_G↔T_E → <b>Agreement</b></div>
+<div class="arrow">▼</div>
+<div class="node n-step"><b>Bước 8 · Confidence Fusion + Threshold</b><br>FinalScore = α·Conf_G + β·Conf_E + γ·Agreement &nbsp;→&nbsp; giữ nếu &gt; 0.5, sắp xếp giảm dần</div>
+<div class="arrow">▼</div>
+<div class="node n-out">🗂️ <b><span class="mono">pseudo_labels.json</span></b> — review + danh sách quads (kèm audit trail)</div>
+
+<p class="meta" style="margin-top:10px;">Chú thích màu: <span style="background:#fff4e0;">cam</span> = dữ liệu · <span style="background:#eaf1fb;">xanh dương</span> = bước xử lý/trích xuất · <span style="background:#e6f4ea;">xanh lá</span> = mô hình sinh · <span style="background:#f3e8fb;">tím</span> = đầu ra.</p>
+
+<h2>3. Ví dụ xuyên suốt toàn pipeline</h2>
+<p>Theo dõi một review tiếng Việt duy nhất đi qua tất cả các bước:</p>
+<div class="ex"><b>Review gốc (VI):</b> &nbsp; “<b>Phòng rất sạch nhưng bữa sáng thì tệ.</b>” &nbsp; <span class="meta">(≈ “The room was very clean but the breakfast was terrible.”)</span></div>
+
+<table>
+<tr><th style="width:12%;">Bước</th><th style="width:40%;">Xử lý trên ví dụ</th><th>Kết quả trung gian</th></tr>
+
+<tr><td><b>0. Language ID</b></td>
+<td>fastText <span class="mono">lid.176</span> dự đoán ngôn ngữ của câu.</td>
+<td><span class="mono">language = "vi"</span>, <span class="mono">language_score = 0.99</span></td></tr>
+
+<tr><td><b>1. Lexicon</b></td>
+<td>Tokenize bằng wordfreq; tính Log-Weirdness (unigram) &amp; PMI (bigram); nhận diện opinion/intensifier.</td>
+<td><span class="mono">phòng</span> → hotel term (salience ≈ 0.82) · <span class="mono">bữa sáng</span> → bigram term (PMI cao ≈ 0.75) · <span class="mono">sạch</span>, <span class="mono">tệ</span> → opinion (1.0) · <span class="mono">rất</span> → intensifier (1.0)</td></tr>
+
+<tr><td><b>2. DAPT</b></td>
+<td>Span corruption; biased masking ưu tiên che token có salience cao (<span class="mono">sạch</span>, <span class="mono">bữa sáng</span>).</td>
+<td>Input: <span class="mono">Phòng rất &lt;extra_id_0&gt; nhưng &lt;extra_id_1&gt; thì tệ.</span><br>Target: <span class="mono">&lt;extra_id_0&gt; sạch &lt;extra_id_1&gt; bữa sáng &lt;extra_id_2&gt;</span><br>→ mô hình học khôi phục → backbone <span class="mono">hotel-mt5</span></td></tr>
+
+<tr><td><b>3. Fine-tune ASQP</b></td>
+<td>Học ánh xạ review → chuỗi quad tuyến tính hoá (paraphrase linearization).</td>
+<td>Đích huấn luyện: <span class="mono">phòng | sạch | FACILITY | positive ; bữa sáng | tệ | AMENITY | negative</span></td></tr>
+
+<tr><td><b>4. T_G (native)</b></td>
+<td>Beam search sinh chuỗi quad; tính Conf_G = xác suất chuỗi chuẩn hoá độ dài.</td>
+<td>2 quad như trên · <span class="mono">Conf_G ≈ 0.86</span></td></tr>
+
+<tr><td><b>5. Multi-view</b></td>
+<td>NLLB-200 dịch sang 3 view; T_G dự đoán mỗi view; vote trên (category, sentiment).</td>
+<td>View1 (VI native), View2 (EN): <span class="mono">room|clean|FACILITY|positive ; breakfast|terrible|AMENITY|negative</span>, View3 (back-translation VI).<br>Cả <b>3/3 view</b> đồng thuận cả hai khoá → giữ; boost tin cậy → <span class="mono">Conf_G ≈ 0.94</span></td></tr>
+
+<tr><td><b>6. T_E</b></td>
+<td>XLM-R gán BIO; RelationHead biaffine nối cặp; ClassificationHead gán category/sentiment.</td>
+<td>Span: <span class="mono">phòng</span>=B(asp), <span class="mono">sạch</span>=B(opn), <span class="mono">bữa sáng</span>=B-I(asp), <span class="mono">tệ</span>=B(opn); nối (phòng–sạch), (bữa sáng–tệ).<br>Quad giống T_G · <span class="mono">Conf_E ≈ 0.80</span> (quad 1)</td></tr>
+
+<tr><td><b>7. Disagreement</b></td>
+<td>Lọc hallucination (aspect có trong câu ✓); so khớp T_G↔T_E bằng token-Jaccard + match category/sentiment.</td>
+<td>Aspect Jaccard = 1.0, Opinion Jaccard = 1.0, cat &amp; sent khớp → <span class="mono">Agreement ≈ 1.0</span> cho cả 2 quad</td></tr>
+
+<tr><td><b>8. Fusion + Threshold</b></td>
+<td>FinalScore = 0.4·Conf_G + 0.4·Conf_E + 0.2·Agreement; giữ nếu &gt; 0.5.</td>
+<td>Quad 1: 0.4·0.94 + 0.4·0.80 + 0.2·1.0 = <b>0.90</b> ✓<br>Quad 2: 0.4·0.88 + 0.4·0.76 + 0.2·1.0 = <b>0.86</b> ✓ → ghi vào <span class="mono">pseudo_labels.json</span></td></tr>
+</table>
+
+<p><b>Bản ghi cuối cùng (rút gọn) trong <span class="mono">pseudo_labels.json</span>:</b></p>
+<pre>{
+  "review": "Phòng rất sạch nhưng bữa sáng thì tệ.",
+  "quads": [
+    { "aspect": "phòng",    "opinion": "sạch", "category": "FACILITY", "sentiment": "positive",
+      "conf_g": 0.94, "conf_e": 0.80, "agreement": 1.0, "final_score": 0.90,
+      "sources": ["generative", "extractive"] },
+    { "aspect": "bữa sáng", "opinion": "tệ",   "category": "AMENITY",  "sentiment": "negative",
+      "conf_g": 0.88, "conf_e": 0.76, "agreement": 1.0, "final_score": 0.86,
+      "sources": ["generative", "extractive"] }
+  ]
+}</pre>
+<p class="meta">Các con số Conf_G/Conf_E/Agreement ở trên mang tính minh hoạ cho luồng tính toán, không phải kết quả đo thực nghiệm.</p>
+
+<h2>4. Chi tiết từng bước xử lý</h2>
+
+<h3>Bước 0 — Nhận diện ngôn ngữ (<span class="mono">add_language.py</span>)</h3>
+<ul>
+<li><b>Công cụ:</b> fastText <span class="mono">lid.176.bin</span> (176 ngôn ngữ).</li>
+<li><b>Xử lý:</b> làm phẳng văn bản về một dòng → <span class="mono">model.predict</span> → gắn <span class="mono">language</span> + <span class="mono">language_score</span>. Đọc CSV lớn (150–300 MB) theo <b>chunk 50k dòng</b> bằng pandas. Ghi ra <span class="mono">*_lang.csv</span> / <span class="mono">*_lang.json</span>, giữ nguyên bản gốc.</li>
+</ul>
+
+<h3>Bước 1 — Domain Lexicon dữ-liệu-hoá (<span class="mono">dapt/build_lexicon.py</span>)</h3>
+<ul>
+<li><b>Tokenize:</b> <span class="mono">wordfreq.tokenize</span> (theo ngôn ngữ), fallback regex Unicode.</li>
+<li><b>Terminology unigram:</b> <b>Log-Weirdness</b> = <span class="mono">log(f_domain / f_general)</span>, <span class="mono">f_general</span> từ wordfreq. Lọc <span class="mono">count ≥ 20</span>, <span class="mono">f_general ≥ 1e-6</span>, lấy <b>top 300</b>.</li>
+<li><b>Terminology bigram:</b> <b>PMI</b> để bắt collocation, lấy <b>top 100</b>.</li>
+<li><b>Salience:</b> <b>min-max về [0,1]</b> cho terminology.</li>
+<li><b>Opinion:</b> seed ∩ corpus (salience 1.0); tùy chọn mở rộng bằng <b>fastText skip-gram</b> (dim=100), giữ nearest-neighbour <b>cosine ≥ 0.5</b> (salience = similarity).</li>
+<li><b>Negation/Intensifier:</b> danh sách đóng ∩ corpus, salience 1.0.</li>
+<li><b>Đầu ra:</b> <span class="mono">lexicon_&lt;lang&gt;.json</span> và <span class="mono">lexicon.json</span> hợp nhất.</li>
+</ul>
+
+<h3>Bước 2 — Multilingual Hotel-DAPT (<span class="mono">dapt/</span>) — Thành phần A</h3>
+<ul>
+<li><b>Backbone:</b> <span class="mono">google/mt5-base</span>.</li>
+<li><b>Objective:</b> span-corruption denoising: che ~<b>15%</b> token thành span dài <b>1–5</b>, thay bằng <span class="mono">&lt;extra_id_i&gt;</span>.</li>
+<li><b>Biased masking:</b> <span class="mono">weight = 1 + boost·salience</span> (boost 5.0); không có từ khoá → random masking.</li>
+<li><b>Cân bằng ngôn ngữ:</b> temperature sampling <span class="mono">q_l ∝ n_l^(1/T)</span>, T = 2.0.</li>
+<li><b>Masking động</b> mỗi batch; loss CE mT5 tự tính (bỏ qua <span class="mono">-100</span>); mixed precision + gradient accumulation + resume.</li>
+<li><b>Đầu ra:</b> <span class="mono">hotel-mt5/</span>.</li>
+</ul>
+
+<h3>Bước 3 — Fine-tune ASQP cho T_G (<span class="mono">train_asqp_mt5.py</span>)</h3>
+<ul>
+<li>Fine-tune seq2seq: <span class="mono">review → aspect | opinion | category | sentiment ; ...</span> (Zhang et al., 2021).</li>
+<li>Tối ưu T4: <b>Adafactor</b>, <b>gradient checkpointing</b>, mixed precision, gradient accumulation; LR = 3e-4.</li>
+</ul>
+
+<h3>Bước 4 — Generative Teacher T_G (<span class="mono">teacher/generative_teacher.py</span>, <span class="mono">models/mt5.py</span>)</h3>
+<ul>
+<li>Beam search (4) → <span class="mono">parse_quads</span> (regex khoan dung) → danh sách quad.</li>
+<li><b>Conf_G</b> = <span class="mono">exp(mean_t log P(token_t))</span> qua <span class="mono">compute_transition_scores</span>; mọi quad cùng review chia sẻ chung Conf_G.</li>
+</ul>
+
+<h3>Bước 5 — Multi-view Multilingual (<span class="mono">teacher/multiview.py</span>, <span class="mono">teacher/translator.py</span>) — Thành phần C</h3>
+<ul>
+<li><b>Translator:</b> <span class="mono">facebook/nllb-200-distilled-600M</span> (many-to-many). Ánh xạ fastText → FLORES-200.</li>
+<li>3 view: Native / Dịch-sang-English / Back-translation (English pivot qua tiếng Pháp).</li>
+<li>Vote trên khoá <b>(category, sentiment)</b>; giữ nếu <b>≥ 2/3 view</b>; boost 0.15/view; representative ưu tiên native → back-translated → translated.</li>
+<li>Chỉ áp cho T_G; T_E chạy một lần trên câu gốc.</li>
+</ul>
+
+<h3>Bước 6 — Extractive Teacher T_E (<span class="mono">teacher/extractive_teacher.py</span>, <span class="mono">models/*.py</span>)</h3>
+<ul>
+<li><b>Backbone:</b> <span class="mono">xlm-roberta-base</span>.</li>
+<li><b>SpanHead:</b> 2 bộ BIO (O/B/I) độc lập cho aspect/opinion.</li>
+<li><b>RelationHead:</b> biaffine Dozat–Manning <span class="mono">aᵀ U o + wₐᵀa + wₒᵀo + b</span>.</li>
+<li><b>ClassificationHead:</b> <span class="mono">[a; o; a⊙o]</span> → category + sentiment.</li>
+<li>Huấn luyện teacher-forcing gold span: span CE + relation BCE (<span class="mono">pos_weight</span>) + category/sentiment CE.</li>
+<li>Suy luận: BIO → span → mean-pool → sigmoid relation, <b>giữ mọi cặp &gt; 0.5</b> → phân loại.</li>
+<li><b>Conf_E</b> = <span class="mono">(asp · opn · rel · cat · sent)^(1/5)</span> (geometric mean).</li>
+</ul>
+
+<h3>Bước 7 — Architectural Disagreement (<span class="mono">teacher/disagreement.py</span>)</h3>
+<ul>
+<li>Lọc hallucination: aspect T_G phải xuất hiện trong review gốc (<span class="mono">contains_phrase</span>).</li>
+<li>So khớp greedy 1-1: <span class="mono">0.4·Jaccard(aspect) + 0.3·Jaccard(opinion) + 0.15·match(cat) + 0.15·match(sent)</span>, ngưỡng 0.3.</li>
+<li>Quad một-teacher → agreement = 0, conf teacher kia = 0.</li>
+</ul>
+
+<h3>Bước 8 — Confidence Fusion + Threshold (<span class="mono">teacher/confidence_fusion.py</span>)</h3>
+<ul>
+<li><b>FinalScore = α·Conf_G + β·Conf_E + γ·Agreement</b> (α = β = 0.4, γ = 0.2).</li>
+<li>Giữ nếu FinalScore &gt; 0.5, sắp xếp giảm dần, kèm audit trail. Đầu ra: <span class="mono">pseudo_labels.json</span>.</li>
+</ul>
+
+<h2>5. Ontology &amp; schema nhãn</h2>
+<ul>
+<li><b>6 Aspect Category:</b> <span class="mono">FACILITY, AMENITY, EXPERIENCE, SERVICE, LOYALTY, BRANDING</span>.</li>
+<li><b>3 Sentiment:</b> <span class="mono">positive, negative, neutral</span>.</li>
+<li><b>BIO:</b> <span class="mono">O, B, I</span> cho mỗi loại span.</li>
+</ul>
+<p class="meta">Lưu ý: thiết kế nêu 6 category + 29 subcategory; mã hiện chỉ hiện thực 6 category cấp trên. Hai teacher dùng chung bộ nhãn này để so khớp trực tiếp.</p>
+
+<h2>6. Cấu trúc mã nguồn</h2>
+<table>
+<tr><th>Thư mục / file</th><th>Vai trò</th></tr>
+<tr><td><span class="mono">add_language.py</span></td><td>Language ID (fastText).</td></tr>
+<tr><td><span class="mono">dapt/build_lexicon.py</span></td><td>Domain lexicon (weirdness + PMI + fastText).</td></tr>
+<tr><td><span class="mono">dapt/masking.py</span></td><td>Span corruption + biased masking.</td></tr>
+<tr><td><span class="mono">dapt/dataset.py, collator.py, trainer.py, train_dapt.py</span></td><td>Corpus, temperature sampling, vòng DAPT → <span class="mono">hotel-mt5/</span>.</td></tr>
+<tr><td><span class="mono">train_asqp_mt5.py</span></td><td>Fine-tune ASQP có giám sát cho T_G.</td></tr>
+<tr><td><span class="mono">teacher/generative_teacher.py, models/mt5.py</span></td><td>T_G: sinh quad + Conf_G.</td></tr>
+<tr><td><span class="mono">teacher/multiview.py, translator.py</span></td><td>Multi-view + NLLB-200, self-consistency vote.</td></tr>
+<tr><td><span class="mono">teacher/extractive_teacher.py, models/heads.py, models/xlmr.py</span></td><td>T_E: XLM-R + 3 head, Conf_E.</td></tr>
+<tr><td><span class="mono">teacher/disagreement.py</span></td><td>Hallucination filter + Agreement.</td></tr>
+<tr><td><span class="mono">teacher/confidence_fusion.py</span></td><td>FinalScore + threshold → pseudo-label.</td></tr>
+<tr><td><span class="mono">train.py</span></td><td>Điều phối: huấn luyện T_E + sinh pseudo-label dual-teacher.</td></tr>
+<tr><td><span class="mono">utils/*.py</span></td><td>Schema, label maps, text alignment, data loader dùng chung.</td></tr>
+</table>
+
+<h2>7. Đối chiếu với thiết kế MERA-XQUAD (§4 của MultiLABSA.docx)</h2>
+<table>
+<tr><th>Thành phần thiết kế</th><th>Trạng thái</th><th>Ghi chú</th></tr>
+<tr><td>A. Multilingual Hotel-DAPT</td><td class="ok">Hoàn thành</td><td>biased masking + temperature sampling.</td></tr>
+<tr><td>B. Dual teacher (T_G + T_E)</td><td class="ok">Hoàn thành</td><td>hotel-mt5 ASQP + XLM-R 3 head.</td></tr>
+<tr><td>C. Multi-view multilingual</td><td class="ok">Hoàn thành</td><td>NLLB-200, 3 view, self-consistency vote.</td></tr>
+<tr><td>D. QUAD matching</td><td class="partial">Một phần</td><td>Greedy 1-1 + Jaccard; thiết kế yêu cầu <b>Hungarian matching</b> — chưa có.</td></tr>
+<tr><td>E. Element-wise reliability rₑ</td><td class="no">Chưa</td><td>Chưa có công thức 6 thành phần.</td></tr>
+<tr><td>F. Relation-aware reliability r_quad</td><td class="partial">Một phần</td><td>Conf_E có yếu tố relation trong T_E; nhưng r_rel/r_quad liên-teacher chưa có.</td></tr>
+<tr><td>G. Implicit AT/OT (NULL heads)</td><td class="no">Chưa</td><td>Chưa có head NULL.</td></tr>
+<tr><td>H. Confidence–stability routing</td><td class="no">Chưa</td><td>Một ngưỡng cứng thay 5 route.</td></tr>
+<tr><td>I. Hybrid student + multi-objective loss</td><td class="no">Chưa</td><td>Chưa huấn luyện student.</td></tr>
+<tr><td>J. EMA + dynamic curriculum</td><td class="no">Chưa</td><td>Chưa có EMA/curriculum.</td></tr>
+</table>
+
+<h2>8. Hiện trạng lộ trình &amp; việc chưa làm</h2>
+<div class="callout">
+Đối chiếu pseudocode §5.3: repo đã chạy <b>bước 1–6</b> (DAPT → fine-tune 2 teacher → sinh candidate đa-view → matching → chấm điểm → lọc), ở dạng <b>rút gọn</b> (greedy thay Hungarian; fusion tuyến tính thay reliability nguyên tố/quan hệ; ngưỡng cứng thay routing).
+<b>Bước 7–9</b> (hybrid student, EMA/curriculum, self-training nhiều vòng) và toàn bộ <b>baseline/bảng thực nghiệm §3, §6</b> chưa hiện thực. Theo §5.1, dự án đang ở khoảng <b>P0–P4 (một phần), chớm P5</b>.
+</div>
+<ul>
+<li>Thay greedy matching bằng <b>Hungarian matching</b> với hàm điểm <span class="mono">Sᵢⱼ</span> đầy đủ.</li>
+<li>Element-wise &amp; relation-aware reliability (<span class="mono">rₑ, r_rel, r_quad</span>) + calibration.</li>
+<li>Implicit AT/OT (NULL heads) + routing 5 nhánh.</li>
+<li>Hybrid student (encoder + decoder + auxiliary heads) loss đa mục tiêu; EMA teacher + dynamic curriculum; self-training 2–4 vòng.</li>
+<li>Hệ baseline (Paraphrase-mT5, MVP, One-ASQP, GAS…) + bảng đánh giá §6 (element/structure F1, implicit, multilingual gap, pseudo-label precision/coverage, hiệu năng/chi phí).</li>
+<li>Bộ gold cho từng ngôn ngữ (~100–150 câu/ngôn ngữ) cho đánh giá cross-language.</li>
+</ul>
+
+<h2>9. Tham số khởi đầu chính (mặc định trong mã)</h2>
+<table>
+<tr><th>Thành phần</th><th>Tham số</th><th>Giá trị</th></tr>
+<tr><td>DAPT</td><td>noise_density / max_span / lexicon_boost / sampling T</td><td>0.15 / 5 / 5.0 / 2.0</td></tr>
+<tr><td>Lexicon</td><td>min_count / top unigram / top bigram / min_similarity</td><td>20 / 300 / 100 / 0.5</td></tr>
+<tr><td>T_G</td><td>num_beams / max_new_tokens / max_source_len</td><td>4 / 160 / 256</td></tr>
+<tr><td>T_E</td><td>backbone / relation_threshold / lr / epochs</td><td>xlm-roberta-base / 0.5 / 2e-5 / 5</td></tr>
+<tr><td>Multi-view</td><td>min_agreeing_views / confidence_boost</td><td>2 / 0.15</td></tr>
+<tr><td>Disagreement</td><td>aspect/opinion/cat/sent weight / match_threshold</td><td>0.4 / 0.3 / 0.15 / 0.15 / 0.3</td></tr>
+<tr><td>Fusion</td><td>α / β / γ / threshold</td><td>0.4 / 0.4 / 0.2 / 0.5</td></tr>
+</table>
+
+<h2>10. Tài liệu công nghệ tham khảo</h2>
+<p class="meta">
+mT5 (Xue et al., 2021) · XLM-R (Conneau et al., 2020) · NLLB-200 (NLLB Team, 2022) · fastText LID/skip-gram (Joulin/Bojanowski et al., 2017) ·
+ASQP paraphrase linearization (Zhang et al., 2021) · Biaffine relation scoring (Dozat &amp; Manning, 2017) · Temperature sampling (mT5/XLM) · wordfreq (Speer et al.).
+</p>
+
+<hr>
+<p class="meta">Báo cáo được lập trên cơ sở đọc trực tiếp mã nguồn kho <span class="mono">MultiLABSA</span> và đối chiếu với tài liệu thiết kế <span class="mono">MultiLABSA.docx</span>.</p>
